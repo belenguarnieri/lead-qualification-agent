@@ -1,0 +1,232 @@
+{
+  "name": "Lead Qualification - Multiagent System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Recibir Lead",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{ \"status\": \"received\", \"message\": \"Lead recibido. Procesando.\" }",
+        "options": { "responseCode": 200 }
+      },
+      "id": "immediate-response",
+      "name": "Respuesta Inmediata HTTP 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 180],
+      "notes": "Responde 200 inmediatamente para evitar reenvios del sistema emisor"
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\nconst transactionId = `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\nconst sanitized = {\n  transaction_id: transactionId,\n  company_name: lead.company_name || 'Sin datos',\n  industry: lead.industry || 'Desconocida',\n  company_size: lead.company_size || 'Desconocido',\n  message: lead.message || '',\n  budget_range: lead.budget_range || 'No especificado',\n  source: lead.source || 'Web',\n  email_domain: lead.email ? lead.email.split('@')[1] : 'unknown',\n  timestamp_received: new Date().toISOString()\n};\nreturn [{ json: sanitized }];"
+      },
+      "id": "data-sanitization",
+      "name": "Data Sanitization (Anti-PII)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "notes": "Filtra PII antes de cualquier llamada a API de IA. Genera UUID de trazabilidad."
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Eres un Agente Analista de Leads Comerciales. Tu unica responsabilidad es extraer y estructurar la informacion relevante de un lead potencial.\n\nDEBES responder UNICAMENTE con un JSON valido con esta estructura exacta:\n{\n  \"company_name\": \"string\",\n  \"industry\": \"string\",\n  \"company_size_category\": \"startup|pyme|enterprise\",\n  \"detected_pain_point\": \"string o null\",\n  \"budget_signal\": \"low|medium|high|unknown\",\n  \"data_completeness_score\": 0.0,\n  \"missing_fields\": [],\n  \"analysis_notes\": \"string\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "=Analiza este lead:\nEmpresa: {{ $json.company_name }}\nIndustria: {{ $json.industry }}\nTamano: {{ $json.company_size }}\nMensaje: {{ $json.message }}\nPresupuesto: {{ $json.budget_range }}\nFuente: {{ $json.source }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.1, "maxTokens": 500 }
+      },
+      "id": "agent-analyst",
+      "name": "Agente A: Analista de Lead",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "openAiApi": { "id": "openai-credentials", "name": "OpenAI API" }
+      },
+      "notes": "AGENTE 1 - Responsabilidad unica: extraccion y validacion de datos del lead."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawResponse = $input.first().json.message?.content || $input.first().json.text || '';\nlet analysis;\ntry {\n  const jsonMatch = rawResponse.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON en respuesta del Agente A');\n  analysis = JSON.parse(jsonMatch[0]);\n} catch (e) {\n  analysis = {\n    company_name: 'Error', industry: 'Desconocida',\n    company_size_category: 'unknown', detected_pain_point: null,\n    budget_signal: 'unknown', data_completeness_score: 0,\n    missing_fields: ['error_parsing'],\n    analysis_notes: `Error: ${e.message}`\n  };\n}\nconst requiredFields = ['company_name', 'industry', 'data_completeness_score'];\nconst missingRequired = requiredFields.filter(f => analysis[f] === undefined);\nreturn [{ json: {\n  ...analysis,\n  validation_passed: missingRequired.length === 0,\n  validation_errors: missingRequired,\n  transaction_id: $('Data Sanitization (Anti-PII)').first().json.transaction_id,\n  agent_a_raw_tokens: $input.first().json.usage?.total_tokens || 0\n}}];"
+      },
+      "id": "validate-agent-a",
+      "name": "Validar Schema Agente A",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1150, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Eres un Agente Decisor Comercial. Tu unica responsabilidad es clasificar un lead y determinar la accion comercial correcta.\n\nDEBES responder UNICAMENTE con JSON:\n{\n  \"lead_score\": 0,\n  \"classification\": \"hot|warm|cold\",\n  \"recommended_action\": \"immediate_call|nurturing_email|discard\",\n  \"action_reason\": \"string obligatorio con min 20 palabras\",\n  \"urgency_level\": \"high|medium|low\",\n  \"confidence_score\": 0.0,\n  \"next_step_owner\": \"sales_team|marketing_team|discard\"\n}\nREGLAS: Si confidence_score < 0.6, usa recommended_action = 'request_more_info'. Si data_completeness_score < 0.4, clasifica como cold."
+            },
+            {
+              "role": "user",
+              "content": "=Decide la accion comercial:\n{{ JSON.stringify($json, null, 2) }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.1, "maxTokens": 400 }
+      },
+      "id": "agent-decision",
+      "name": "Agente B: Decisor Comercial",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [1400, 300],
+      "credentials": {
+        "openAiApi": { "id": "openai-credentials", "name": "OpenAI API" }
+      },
+      "notes": "AGENTE 2 - Responsabilidad unica: clasificacion Hot/Warm/Cold y decision de accion."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawResponse = $input.first().json.message?.content || $input.first().json.text || '';\nlet decision;\ntry {\n  const jsonMatch = rawResponse.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON en respuesta del Agente B');\n  decision = JSON.parse(jsonMatch[0]);\n} catch (e) {\n  decision = {\n    lead_score: 0, classification: 'cold',\n    recommended_action: 'discard',\n    action_reason: 'Error en procesamiento. Requiere revision manual.',\n    urgency_level: 'low', confidence_score: 0,\n    next_step_owner: 'discard'\n  };\n}\nconst requiresHumanReview = decision.confidence_score < 0.5;\nconst tokensAgentA = $('Validar Schema Agente A').first().json.agent_a_raw_tokens || 0;\nconst tokensAgentB = $input.first().json.usage?.total_tokens || 0;\nconst totalTokens = tokensAgentA + tokensAgentB;\nconst estimatedCostUSD = (totalTokens / 1000000) * 0.15;\nif (estimatedCostUSD > 0.50) {\n  throw new Error(`COST_CIRCUIT_BREAKER: Costo $${estimatedCostUSD.toFixed(4)} supera umbral de $0.50`);\n}\nreturn [{ json: {\n  ...decision,\n  requires_human_review: requiresHumanReview,\n  transaction_id: $('Validar Schema Agente A').first().json.transaction_id,\n  total_tokens_used: totalTokens,\n  estimated_cost_usd: parseFloat(estimatedCostUSD.toFixed(6)),\n  agent_b_tokens: tokensAgentB\n}}];"
+      },
+      "id": "validate-agent-b",
+      "name": "Validar Schema Agente B + Circuit Breaker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sanitizedData = $('Data Sanitization (Anti-PII)').first().json;\nconst analysisData = $('Validar Schema Agente A').first().json;\nconst decisionData = $input.first().json;\nconst log = {\n  timestamp: new Date().toISOString(),\n  transaction_id: decisionData.transaction_id,\n  process_name: 'lead_qualification',\n  agents_participated: ['agent_analyst', 'agent_decision'],\n  input_summary: { company: sanitizedData.company_name, industry: sanitizedData.industry, source: sanitizedData.source },\n  agent_a_output: { agent_name: 'agent_analyst', data_completeness_score: analysisData.data_completeness_score, validation_passed: analysisData.validation_passed, status: analysisData.validation_passed ? 'success' : 'partial' },\n  agent_b_output: { agent_name: 'agent_decision', classification: decisionData.classification, lead_score: decisionData.lead_score, recommended_action: decisionData.recommended_action, confidence_score: decisionData.confidence_score, status: 'success' },\n  telemetry: { total_tokens_used: decisionData.total_tokens_used, estimated_cost_usd: decisionData.estimated_cost_usd, requires_human_review: decisionData.requires_human_review },\n  execution_status: 'completed'\n};\nreturn [{ json: log }];"
+      },
+      "id": "observability-log",
+      "name": "Observability: Registro de Telemetria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "value": "={{ $env.OBSERVABILITY_SHEET_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Logs", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "transaction_id": "={{ $json.transaction_id }}",
+            "company": "={{ $json.input_summary.company }}",
+            "classification": "={{ $json.agent_b_output.classification }}",
+            "lead_score": "={{ $json.agent_b_output.lead_score }}",
+            "recommended_action": "={{ $json.agent_b_output.recommended_action }}",
+            "confidence_score": "={{ $json.agent_b_output.confidence_score }}",
+            "total_tokens": "={{ $json.telemetry.total_tokens_used }}",
+            "estimated_cost_usd": "={{ $json.telemetry.estimated_cost_usd }}",
+            "requires_human_review": "={{ $json.telemetry.requires_human_review }}",
+            "status": "={{ $json.execution_status }}"
+          }
+        }
+      },
+      "id": "log-to-sheets",
+      "name": "Log: Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2150, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "google-sheets-credentials", "name": "Google Sheets" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $('Validar Schema Agente B + Circuit Breaker').first().json.classification }}",
+              "rightValue": "hot",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "router-classification",
+      "name": "Router: Clasificacion Hot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2150, 400]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_SALES_CHANNEL }}",
+        "text": "=:fire: *LEAD HOT DETECTADO*\n*Transaction ID:* `{{ $('Validar Schema Agente B + Circuit Breaker').first().json.transaction_id }}`\n*Empresa:* {{ $('Data Sanitization (Anti-PII)').first().json.company_name }}\n*Score:* {{ $('Validar Schema Agente B + Circuit Breaker').first().json.lead_score }}/100\n*Razon:* {{ $('Validar Schema Agente B + Circuit Breaker').first().json.action_reason }}\n*Accion:* Llamada inmediata",
+        "otherOptions": {}
+      },
+      "id": "slack-hot-lead",
+      "name": "Slack: Alerta Lead HOT",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [2400, 300],
+      "credentials": { "slackApi": { "id": "slack-credentials", "name": "Slack API" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $('Validar Schema Agente B + Circuit Breaker').first().json.requires_human_review }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      },
+      "id": "human-review-check",
+      "name": "Requiere Revision Humana?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2400, 500]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_OPS_CHANNEL }}",
+        "text": "=:warning: *REVISION HUMANA REQUERIDA*\n*Transaction ID:* `{{ $('Validar Schema Agente B + Circuit Breaker').first().json.transaction_id }}`\nConfianza baja del Agente B ({{ ($('Validar Schema Agente B + Circuit Breaker').first().json.confidence_score * 100).toFixed(0) }}%). Requiere validacion manual.",
+        "otherOptions": {}
+      },
+      "id": "slack-human-review",
+      "name": "Slack: Escalado a Humano",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [2650, 450],
+      "credentials": { "slackApi": { "id": "slack-credentials", "name": "Slack API" } }
+    }
+  ],
+  "connections": {
+    "Webhook: Recibir Lead": { "main": [[{ "node": "Respuesta Inmediata HTTP 200", "type": "main", "index": 0 }, { "node": "Data Sanitization (Anti-PII)", "type": "main", "index": 0 }]] },
+    "Data Sanitization (Anti-PII)": { "main": [[{ "node": "Agente A: Analista de Lead", "type": "main", "index": 0 }]] },
+    "Agente A: Analista de Lead": { "main": [[{ "node": "Validar Schema Agente A", "type": "main", "index": 0 }]] },
+    "Validar Schema Agente A": { "main": [[{ "node": "Agente B: Decisor Comercial", "type": "main", "index": 0 }]] },
+    "Agente B: Decisor Comercial": { "main": [[{ "node": "Validar Schema Agente B + Circuit Breaker", "type": "main", "index": 0 }]] },
+    "Validar Schema Agente B + Circuit Breaker": { "main": [[{ "node": "Observability: Registro de Telemetria", "type": "main", "index": 0 }]] },
+    "Observability: Registro de Telemetria": { "main": [[{ "node": "Log: Google Sheets", "type": "main", "index": 0 }, { "node": "Router: Clasificacion Hot?", "type": "main", "index": 0 }]] },
+    "Router: Clasificacion Hot?": { "main": [[{ "node": "Slack: Alerta Lead HOT", "type": "main", "index": 0 }], [{ "node": "Requiere Revision Humana?", "type": "main", "index": 0 }]] },
+    "Requiere Revision Humana?": { "main": [[{ "node": "Slack: Escalado a Humano", "type": "main", "index": 0 }], []] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "instanceId": "lead-qualification-multiagent-v1" }
+}

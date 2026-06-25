@@ -1,0 +1,36 @@
+# ============================================================
+# LEAD QUALIFICATION AGENT - Variables de Entorno
+# NUNCA commitear el archivo .env real. Solo este .env.example
+# ============================================================
+
+# --- OpenAI ---
+OPENAI_API_KEY=sk-...tu_clave_aqui...
+
+# --- Google Sheets (Observabilidad) ---
+# ID de la hoja de cálculo donde se registran los logs de telemetría
+# Encontralo en la URL: docs.google.com/spreadsheets/d/ESTE_ID/edit
+OBSERVABILITY_SHEET_ID=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms
+
+# --- Slack ---
+# Canal donde se notifican los leads HOT al equipo de ventas
+SLACK_SALES_CHANNEL=#ventas-leads-hot
+
+# Canal donde se notifican escalados a revisión humana
+SLACK_OPS_CHANNEL=#ops-alertas
+
+# Token de Slack (Bot Token, empieza con xoxb-)
+SLACK_BOT_TOKEN=xoxb-...tu_token_aqui...
+
+# --- n8n (si self-hosted) ---
+# URL base de tu instancia de n8n
+N8N_BASE_URL=https://tu-instancia.n8n.io
+
+# Webhook URL generada por n8n al activar el flujo
+WEBHOOK_URL=https://tu-instancia.n8n.io/webhook/new-lead
+
+# --- Control de costos ---
+# Umbral máximo en USD por ejecución (circuit breaker)
+MAX_COST_PER_EXECUTION_USD=0.50
+
+# Modelo a usar (gpt-4o-mini recomendado para balance costo/calidad)
+OPENAI_MODEL=gpt-4o-mini

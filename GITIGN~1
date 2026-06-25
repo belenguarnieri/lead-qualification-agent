@@ -1,0 +1,13 @@
+# Nunca commitear credenciales reales
+.env
+
+# n8n local
+.n8n/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
